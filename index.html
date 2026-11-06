@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f3337">
+<meta name="description" content="高度化PICSのBLE電波を受信して、近くの歩行者信号の色と残り時間を表示します。">
+<title>信号ウォッチ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ===== 色とサイズ ===== */
+:root{
+  --asphalt:#2f3337;      /* ヘッダー：道路 */
+  --stripe:#f2f2ee;       /* 横断歩道の白 */
+  --bg:#eceeeb;
+  --card:#ffffff;
+  --ink:#1e2225;
+  --muted:#6a7277;
+  --line:#d6dad6;
+  --red:#e3352d;
+  --green:#00a088;        /* 日本の「青」信号 */
+  --housing:#2a2e32;
+  --lens-off:#3a3f44;
+  --warn:#b7791f;
+  --radius-lg:22px;
+  --radius-sm:10px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16191b; --card:#202427; --ink:#eef1ef; --muted:#9aa3a8; --line:#33383c;
+    --asphalt:#0f1214; --housing:#0c0e10; --lens-off:#24292d;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{font-family:'BIZ UDPGothic',system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}
+button,select{font-family:inherit;font-size:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--green);outline-offset:2px}
+a{color:inherit}
+
+/* ===== ヘッダー（横断歩道） ===== */
+.top{background:var(--asphalt);color:#fff;padding:calc(env(safe-area-inset-top) + 14px) 16px 0}
+.top-inner{max-width:760px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.title{font-size:22px;font-weight:700;letter-spacing:.04em;display:flex;align-items:center;gap:10px}
+.title-mark{width:14px;height:26px;border-radius:4px;background:linear-gradient(var(--red) 0 46%,transparent 46% 54%,var(--green) 54%)}
+.state-pill{font-size:13px;padding:5px 12px;border-radius:99px;background:rgba(255,255,255,.12);white-space:nowrap}
+.state-pill[data-s="scan"]{background:var(--green)}
+.state-pill[data-s="demo"]{background:var(--warn)}
+.zebra{height:18px;margin-top:14px;background:repeating-linear-gradient(90deg,var(--stripe) 0 28px,transparent 28px 52px);opacity:.9}
+
+main{max-width:760px;margin:0 auto;padding:16px 16px calc(env(safe-area-inset-bottom) + 32px)}
+
+/* ===== 操作 ===== */
+.controls{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.controls .primary{grid-column:1/-1}
+.controls:has(#stopBtn[hidden]){grid-template-columns:repeat(2,1fr)}
+.btn{border:none;border-radius:var(--radius-sm);padding:14px 18px;font-weight:700;font-size:16px;cursor:pointer;background:var(--card);border:2px solid var(--line)}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink);padding:16px 18px;font-size:17px}
+.btn:disabled{opacity:.4;cursor:default}
+.btn.stop{border-color:var(--red);color:var(--red)}
+.btn{padding:14px 8px}
+.btn[hidden]{display:none}
+.msg{font-size:14px;color:var(--muted);margin-bottom:14px;white-space:pre-line}
+.msg.err{color:var(--red);font-weight:700}
+.env{background:var(--card);border-left:6px solid var(--warn);border-radius:var(--radius-sm);padding:14px 16px;font-size:14px;margin-bottom:16px}
+.env strong{display:block;font-size:15px;margin-bottom:4px}
+.env ol{padding-left:1.3em;margin-top:6px}
+.env code{font-size:12px;word-break:break-all;background:var(--bg);padding:1px 4px;border-radius:4px}
+
+/* ===== 交差点の切り替え ===== */
+.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:12px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;display:flex;align-items:center;gap:8px;border:2px solid var(--line);background:var(--card);border-radius:99px;padding:8px 14px;font-size:14px;font-weight:700;cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--ink)}
+.chip .dots{display:flex;gap:3px}
+.chip .dots i{width:9px;height:9px;border-radius:50%;background:var(--lens-off)}
+.chip .dots i.r{background:var(--red)} .chip .dots i.g,.chip .dots i.b{background:var(--green)}
+.chip.stale{opacity:.55}
+
+/* ===== 交差点 ===== */
+.place{background:var(--card);border-radius:var(--radius-lg);padding:18px 18px 6px;box-shadow:0 1px 0 var(--line)}
+.place-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:4px}
+.place-name{font-size:23px;font-weight:700;line-height:1.35;word-break:break-all}
+.place-sub{font-size:13px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px}
+.place-sub a{color:var(--muted)}
+.fresh{font-size:13px;font-weight:700;white-space:nowrap;padding:3px 10px;border-radius:99px;background:var(--bg)}
+.fresh.live::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px;vertical-align:1px;animation:live 1.6s infinite}
+.fresh.stale{color:var(--warn)}
+@keyframes live{50%{opacity:.25}}
+
+/* ===== 信号 1灯 ===== */
+.signals{display:grid;grid-template-columns:1fr;margin-top:8px}
+@media (min-width:640px){ .signals{grid-template-columns:1fr 1fr;column-gap:24px} }
+.sig{display:grid;grid-template-columns:80px 1fr;gap:18px;align-items:center;padding:16px 0;border-top:1px solid var(--line)}
+@media (min-width:640px){ .sig:nth-child(2){border-top:1px solid var(--line)} }
+.head{background:var(--housing);border-radius:12px;padding:7px;display:flex;flex-direction:column;gap:6px;width:80px}
+.lamp{aspect-ratio:1;border-radius:8px;background:var(--lens-off);display:flex;align-items:center;justify-content:center}
+.lamp svg{width:74%;height:74%;fill:#53595f}
+.sig[data-s="Red"] .lamp.red{background:#3b1513;box-shadow:inset 0 0 0 2px #5a1f1b}
+.sig[data-s="Red"] .lamp.red svg{fill:var(--red);filter:drop-shadow(0 0 6px rgba(227,53,45,.7))}
+.sig[data-s="Green"] .lamp.grn,.sig[data-s="BlinkGreen"] .lamp.grn{background:#0d2f2a;box-shadow:inset 0 0 0 2px #134a42}
+.sig[data-s="Green"] .lamp.grn svg,.sig[data-s="BlinkGreen"] .lamp.grn svg{fill:#19d1b2;filter:drop-shadow(0 0 6px rgba(25,209,178,.6))}
+.sig[data-s="BlinkGreen"] .lamp.grn svg{animation:blink 1s steps(1) infinite}
+.sig.frozen .lamp svg{animation:none!important}
+@keyframes blink{50%{fill:#53595f;filter:none}}
+.bar{display:grid;grid-template-columns:repeat(8,1fr);gap:2px;padding:2px 1px}
+.bar i{height:7px;border-radius:2px;background:#454b51}
+.sig[data-s="Red"] .bar i.on{background:var(--red)}
+.sig[data-s="Green"] .bar i.on,.sig[data-s="BlinkGreen"] .bar i.on{background:#19d1b2}
+
+.info-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.sig-name{font-size:15px;color:var(--muted);font-weight:700}
+.sig-state{font-size:15px;font-weight:700;padding:3px 12px;border-radius:99px;background:var(--bg);color:var(--muted)}
+.sig[data-s="Red"] .sig-state{background:var(--red);color:#fff}
+.sig[data-s="Green"] .sig-state,.sig[data-s="BlinkGreen"] .sig-state{background:var(--green);color:#fff}
+.sig[data-s="Red"] .count .num{color:var(--red)}
+.sig[data-s="Green"] .count .num,.sig[data-s="BlinkGreen"] .count .num{color:var(--green)}
+.sig.frozen .sig-state{background:var(--bg)!important;color:var(--muted)!important}
+.count{display:flex;align-items:baseline;gap:6px;margin-top:2px}
+.count .approx{font-size:16px;font-weight:700;color:var(--muted)}
+.count .num{font-size:60px;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.count .unit{font-size:17px;font-weight:700}
+.count .word{font-size:22px;font-weight:700;line-height:1.6;color:var(--muted)}
+.count-note{font-size:13px;color:var(--muted)}
+.sig.frozen .count .num{color:var(--muted)}
+
+.empty{padding:34px 8px 30px;text-align:center;color:var(--muted)}
+.empty .radar{width:64px;height:64px;margin:0 auto 14px;border-radius:50%;border:3px solid var(--line);position:relative}
+.empty .radar::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:3px solid var(--green);opacity:0}
+.scanning .empty .radar::after{animation:ping 1.8s infinite}
+@keyframes ping{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.6);opacity:0}}
+.empty strong{display:block;color:var(--ink);font-size:17px;margin-bottom:4px}
+
+/* ===== オプション・詳細 ===== */
+.opts{display:flex;flex-wrap:wrap;gap:8px 18px;margin:16px 4px;font-size:14px}
+.opts label{display:flex;align-items:center;gap:8px;cursor:pointer}
+.opts input{width:20px;height:20px;accent-color:var(--green)}
+details.more{background:var(--card);border-radius:var(--radius-sm);margin-top:10px}
+details.more summary{padding:14px 16px;font-weight:700;cursor:pointer;font-size:15px}
+.more-body{padding:0 16px 16px;font-size:14px}
+.more-body p+p,.more-body dl+p{margin-top:8px}
+.more-body dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px}
+.more-body dt{color:var(--muted)}
+.more-body pre{font-size:12px;background:var(--bg);padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-all;margin-top:8px}
+.test{background:var(--card);border-radius:var(--radius-sm);padding:16px;margin-bottom:16px}
+.test-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.test-head>div{flex:1 1 0;min-width:0}
+.test-head{flex-wrap:nowrap;align-items:flex-start}
+.test-head strong{font-size:16px}
+.test-head p{font-size:13px;color:var(--muted)}
+.test-head .btn{flex:none;padding:8px 14px;font-size:14px}
+.verdict{margin-top:14px;padding:14px 16px;border-radius:var(--radius-sm);font-weight:700;font-size:16px;border-left:6px solid var(--muted);background:var(--bg)}
+.verdict.ok{border-color:var(--green)} .verdict.warn{border-color:var(--warn)} .verdict.ng{border-color:var(--red)}
+.verdict small{display:block;font-weight:400;font-size:13px;color:var(--muted);margin-top:2px}
+.checks{list-style:none;margin-top:12px}
+.checks li{display:grid;grid-template-columns:26px 1fr;gap:10px;padding:10px 0;border-top:1px solid var(--line);font-size:14px}
+.checks li:first-child{border-top:none}
+.checks .ic{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;background:var(--muted)}
+.checks [data-r="ok"] .ic{background:var(--green)}
+.checks [data-r="ng"] .ic{background:var(--red)}
+.checks [data-r="warn"] .ic{background:var(--warn)}
+.checks [data-r="run"] .ic{background:transparent;border:3px solid var(--line);border-top-color:var(--green);animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.checks b{display:block;font-size:15px}
+.checks span.d{color:var(--muted);font-size:13px;white-space:pre-line}
+.meter{display:flex;gap:16px;margin-top:6px}
+.meter div{font-size:13px;color:var(--muted)}
+.meter div em{display:block;font-style:normal;font-size:26px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.2}
+@media (prefers-reduced-motion: reduce){ .checks [data-r="run"] .ic{animation-duration:3s} }
+.safety{margin-top:20px;padding:14px 16px;border-radius:var(--radius-sm);background:var(--card);font-size:14px;font-weight:700;display:flex;gap:10px;align-items:flex-start}
+.safety::before{content:"!";flex:none;width:22px;height:22px;border-radius:50%;background:var(--warn);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px}
+footer{font-size:12px;color:var(--muted);margin-top:18px;text-align:center}
+
+@media (prefers-reduced-motion: reduce){
+  .fresh.live::before,.scanning .empty .radar::after{animation:none}
+  .sig[data-s="BlinkGreen"] .lamp.grn svg{animation-duration:2s}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <h1 class="title"><span class="title-mark" aria-hidden="true"></span>信号ウォッチ</h1>
+    <span class="state-pill" id="pill" data-s="idle" role="status">停止中</span>
+  </div>
+  <div class="zebra" aria-hidden="true"></div>
+</header>
+
+<main id="main">
+  <div class="controls">
+    <button class="btn primary" id="startBtn" type="button">近くの信号をさがす</button>
+    <button class="btn" id="demoBtn" type="button">デモを見る</button>
+    <button class="btn" id="testBtn" type="button">端末テスト</button>
+    <button class="btn stop" id="stopBtn" type="button" hidden>停止</button>
+  </div>
+  <p class="msg" id="msg" role="status">初めての端末は「端末テスト」で確認できます。</p>
+  <div class="env" id="env" hidden></div>
+
+  <section class="test" id="testOut" aria-labelledby="testTitle" hidden>
+    <div class="test-head">
+      <div><strong id="testTitle">端末テスト</strong><p>信号の近くでなくても、周りのBluetooth機器（イヤホンなど）の電波で確認します。</p></div>
+      <button class="btn close" id="testClose" type="button" aria-label="テスト結果を閉じる">閉じる</button>
+    </div>
+    <div class="verdict" id="verdict" role="status"></div>
+    <ul class="checks" id="checks"></ul>
+  </section>
+
+  <nav class="chips" id="chips" aria-label="交差点の切り替え"></nav>
+
+  <section class="place" id="place">
+    <div class="empty" id="empty">
+      <div class="radar" aria-hidden="true"></div>
+      <strong id="emptyTitle">信号はまだ見つかっていません</strong>
+      <span id="emptyText">対応している交差点の近くで、さがしてください。</span>
+    </div>
+    <div id="placeBody" hidden>
+      <div class="place-head">
+        <div>
+          <h2 class="place-name" id="placeName">交差点</h2>
+          <div class="place-sub" id="placeSub"></div>
+        </div>
+        <span class="fresh" id="fresh"></span>
+      </div>
+      <div class="signals" id="signals"></div>
+    </div>
+  </section>
+
+  <div class="opts">
+    <label><input type="checkbox" id="optVibe"> 色が変わったら振動する</label>
+    <label><input type="checkbox" id="optWake" checked> 受信中は画面を消さない</label>
+  </div>
+
+  <details class="more">
+    <summary>残り時間の見方</summary>
+    <div class="more-body">
+      <p>信号機からは、残り時間が秒ではなく「8段階」で届きます。メーターの目盛りがその段階です。</p>
+      <p>このアプリは、段階が1つ減るまでの時間を受信しながら測り、「約◯秒」を計算しています。受信を始めてから最初の数十秒は「計測中」と表示されます。</p>
+      <p>「まだ先」は、残りが8段階より長いことを表します。</p>
+    </div>
+  </details>
+  <details class="more">
+    <summary>使える端末と設定</summary>
+    <div class="more-body">
+      <p>Androidの<strong>Google Chrome</strong>で使えます。iPhone・iPadのブラウザは、Bluetoothの電波を受信する機能がないため使えません（デモは見られます）。</p>
+      <p>Chromeのアドレス欄に <code>chrome://flags/#enable-experimental-web-platform-features</code> を入力し、<strong>Experimental Web Platform features</strong> を <strong>Enabled</strong> にして、Chromeを再起動してください。</p>
+      <p>端末のBluetoothと位置情報をオンにし、「近くの信号をさがす」で表示される許可画面で許可してください。</p>
+      <p>対応している交差点（高度化PICS）は、警察庁が公開している<a href="https://data.e-gov.go.jp/data/dataset/npa_20221124_0054" target="_blank" rel="noreferrer">整備交差点の一覧</a>で確認できます。</p>
+    </div>
+  </details>
+  <details class="more">
+    <summary>受信データ（くわしい情報）</summary>
+    <div class="more-body">
+      <dl>
+        <dt>受信方式</dt><dd id="dMode">—</dd>
+        <dt>受信数</dt><dd id="dCount">0</dd>
+        <dt>不正なデータ</dt><dd id="dBad">0</dd>
+        <dt>1段階の長さ</dt><dd id="dStep">—</dd>
+        <dt>最終受信</dt><dd id="dLast">—</dd>
+      </dl>
+      <pre id="dRaw">まだ受信していません</pre>
+    </div>
+  </details>
+
+  <p class="safety">このアプリは目安です。横断するときは、必ず実際の信号と周りの車を見てください。</p>
+  <footer>受信データの解析仕様は <a href="https://github.com/yumu19/ble-pics-viewer" target="_blank" rel="noreferrer">yumu19/ble-pics-viewer</a>（MIT License）を参考にしています。データは端末の中だけで処理し、外部には送信しません。</footer>
+</main>
+
+<template id="sigTpl">
+  <div class="sig">
+    <div class="head" aria-hidden="true">
+      <div class="lamp red"><svg viewBox="0 0 40 40"><circle cx="20" cy="6.5" r="4.5"/><path d="M14 13h12a2 2 0 0 1 2 2v11h-3v12h-4V27h-2v11h-4V26h-3V15a2 2 0 0 1 2-2z"/></svg></div>
+      <div class="lamp grn"><svg viewBox="0 0 40 40"><circle cx="22" cy="6" r="4.5"/><path d="M18.5 12.5l5 .5 4 7 5.5 2.5-1.2 2.8-6.8-3-1.5-2.3-1.8 6.4 4.8 5.6 1.5 8h-4l-1.4-6.6-4.4-4.2-2.6 5.4-6.6 4.8-2.2-3.2 5.6-4.2 3.6-9.6-2.4 1.2-1.6 5.4-3.2-.9 2-7z"/></svg></div>
+      <div class="bar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="info">
+      <div class="info-top"><span class="sig-name"></span><span class="sig-state"></span></div>
+      <div class="count"></div>
+      <div class="count-note"></div>
+    </div>
+  </div>
+</template>
+
+<script>
+'use strict';
+/* =========================================================
+   高度化PICS の解析
+   メーカーID 0x01CE のメーカー固有データ（IDは含まない）
+   [2]=種別 0:名称 1:位置 2:信号  [6..9]=交差点ID
+   種別2: [10..15] 6灯ぶん、下位4bit=状態 上位4bit=残り段階
+   ========================================================= */
+const MFR_ID = 0x01CE;
+const STATES = ['NoSignal','Red','BlinkGreen','Green','None'];
+const STATE_JA = {NoSignal:'消灯', Red:'赤', BlinkGreen:'青点滅', Green:'青', None:'—', Unknown:'不明'};
+const LEVELS = 8;
+const STALE_MS = 5000;
+const FORGET_MS = 120000;
+
+const hex = b => Array.from(b, x=>x.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+function parsePics(bytes){
+  if(bytes.length < 10) throw new Error('短すぎるデータ');
+  const type = bytes[2];
+  const need = {0:24, 1:18, 2:11}[type] ?? 10;
+  if(bytes.length < need) throw new Error('種別'+type+'のデータが短い');
+  const info = {type, id: hex(bytes.subarray(6,10)).replaceAll(' ','')};
+  if(type === 0){
+    info.name = new TextDecoder().decode(bytes.subarray(10,24)).replaceAll('�','').replace(/^\0+|\0+$/g,'').trim();
+  }else if(type === 1){
+    const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    info.lat = v.getInt32(10,false)/1e6; info.lon = v.getInt32(14,false)/1e6;
+  }else if(type === 2){
+    info.signals = [];
+    for(let i=0;i<6;i++){
+      const b = bytes[10+i];
+      if(b === undefined){ info.signals.push({state:'None', level:-1}); continue; }
+      const hi = b>>4;
+      info.signals.push({state: STATES[b & 0x0f] ?? 'Unknown', level: hi>=8 ? -1 : hi+1});
+    }
+  }
+  return info;
+}
+
+/* =========================================================
+   交差点の保持と「残り秒」の推定
+   段階が1つ減ってから次に減るまでの時間 = 1段階の長さ
+   ========================================================= */
+const places = new Map();
+let selectedId = null, userPicked = false;
+const stats = {count:0, bad:0, last:null, raw:''};
+
+function getPlace(id){
+  let p = places.get(id);
+  if(!p){
+    p = {id, name:null, lat:null, lon:null, rssi:null, seen:0, sigAt:0, signals:[], track:[], steps:[], step:null};
+    places.set(id, p);
+  }
+  return p;
+}
+function observeStep(p, ms){
+  const s = ms/1000;
+  if(s < 0.5 || s > 30) return;
+  p.steps.push(s); if(p.steps.length > 9) p.steps.shift();
+  const sorted = [...p.steps].sort((a,b)=>a-b);
+  p.step = sorted[Math.floor(sorted.length/2)];
+}
+function onPacket(bytes, rssi, now){
+  stats.count++; stats.last = now; stats.raw = hex(bytes);
+  let info;
+  try{ info = parsePics(bytes); }catch(e){ stats.bad++; return; }
+  const p = getPlace(info.id);
+  p.seen = now; if(rssi != null) p.rssi = rssi;
+  if(info.type === 0 && info.name) p.name = info.name;
+  if(info.type === 1){ p.lat = info.lat; p.lon = info.lon; }
+  if(info.type === 2){
+    info.signals.forEach((s, i)=>{
+      const t = p.track[i] || (p.track[i] = {state:null, level:null, levelAt:null});
+      if(s.state !== t.state){
+        // 色が変わった：最後の1段階が丸ごと見えていれば、その長さを記録
+        if(t.state && t.level === 1 && t.levelAt) observeStep(p, now - t.levelAt);
+        if(t.state) onColorChange(p, i, s.state);
+        t.state = s.state; t.level = s.level; t.levelAt = null;
+      }else if(s.level !== t.level){
+        if(t.level >= 1 && s.level === t.level - 1){
+          if(t.levelAt) observeStep(p, now - t.levelAt);
+          t.levelAt = now;
+        }else if(t.level === -1 && s.level === LEVELS){
+          t.levelAt = now;           // 「まだ先」から8段階目に入った瞬間
+        }else{
+          t.levelAt = null;          // 飛んだときは測り直し
+        }
+        t.level = s.level;
+      }
+    });
+    p.signals = info.signals; p.sigAt = now;
+  }
+  if(!selectedId || (!userPicked && strongerThanSelected(p))) selectedId = p.id;
+}
+function strongerThanSelected(p){
+  const cur = places.get(selectedId);
+  if(!cur || now() - cur.seen > STALE_MS) return true;
+  return p.rssi != null && cur.rssi != null && p.rssi > cur.rssi + 6;
+}
+// 残り秒の推定
+function estimate(p, i, t){
+  const tr = p.track[i], s = p.signals[i];
+  if(!tr || !s) return {kind:'none'};
+  if(s.state === 'NoSignal' || s.state === 'Unknown') return {kind:'none'};
+  if(s.level < 0) return {kind:'far', min: p.step ? Math.round(LEVELS*p.step) : null};
+  if(!p.step) return {kind:'measuring', level:s.level};
+  const ref = Math.min(t, p.sigAt + STALE_MS);
+  let sec;
+  if(tr.levelAt){
+    sec = (s.level-1)*p.step + Math.max(0, p.step - (ref - tr.levelAt)/1000);
+  }else{
+    sec = (s.level-0.5)*p.step;
+  }
+  return {kind:'sec', sec:Math.max(0, Math.ceil(sec)), exact:!!tr.levelAt, level:s.level};
+}
+
+/* =========================================================
+   振動・画面ロック防止
+   ========================================================= */
+function onColorChange(p, i, state){
+  if(!$('optVibe').checked || p.id !== selectedId || !navigator.vibrate) return;
+  navigator.vibrate(state === 'Green' ? [220,120,220] : state === 'Red' ? [500] : [120]);
+}
+let wakeLock = null;
+async function keepAwake(on){
+  try{
+    if(on && $('optWake').checked && 'wakeLock' in navigator && !wakeLock){
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', ()=>{ wakeLock = null; });
+    }else if(!on && wakeLock){ await wakeLock.release(); wakeLock = null; }
+  }catch(e){ /* 対応していない端末は何もしない */ }
+}
+
+/* =========================================================
+   受信（Web Bluetooth）
+   ========================================================= */
+const $ = id => document.getElementById(id);
+const now = () => Date.now();
+let mode = 'idle', scan = null, watchAbort = null, watchDevice = null, gen = 0;
+
+function onAdv(ev){
+  const data = ev.manufacturerData && ev.manufacturerData.get(MFR_ID);
+  if(!data) return;
+  onPacket(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), ev.rssi ?? null, now());
+}
+function canScan(){ return !!(navigator.bluetooth && navigator.bluetooth.requestLEScan); }
+function canWatch(){ return !!(navigator.bluetooth && navigator.bluetooth.requestDevice && window.BluetoothDevice && 'watchAdvertisements' in BluetoothDevice.prototype); }
+
+async function startScan(){
+  if(mode !== 'idle') stopAll();
+  resetData();
+  const g = ++gen;
+  setMode('wait');
+  try{
+    if(canScan()){
+      navigator.bluetooth.addEventListener('advertisementreceived', onAdv);
+      const s = await navigator.bluetooth.requestLEScan({acceptAllAdvertisements:true, keepRepeatedDevices:true});
+      if(g !== gen){ s.stop(); return; }
+      scan = s; stats.mode = 'まわりをまとめて受信';
+    }else if(canWatch()){
+      const dev = await navigator.bluetooth.requestDevice({
+        filters:[{manufacturerData:[{companyIdentifier:MFR_ID}]}], optionalManufacturerData:[MFR_ID]});
+      if(g !== gen) return;
+      watchAbort = new AbortController(); watchDevice = dev;
+      dev.addEventListener('advertisementreceived', onAdv);
+      await dev.watchAdvertisements({signal: watchAbort.signal});
+      if(g !== gen){ watchAbort.abort(); return; }
+      stats.mode = '選んだ1台を受信';
+    }else{
+      throw Object.assign(new Error('unsupported'), {name:'NotSupportedError'});
+    }
+    setMode('scan');
+    say('受信しています。対応している交差点の近くで待ってください。');
+    keepAwake(true);
+  }catch(e){
+    if(g !== gen) return;
+    stopAll();
+    say(errorText(e), true);
+  }
+}
+function stopAll(){
+  gen++;
+  try{ scan && scan.stop(); }catch(e){}
+  scan = null;
+  if(navigator.bluetooth) navigator.bluetooth.removeEventListener('advertisementreceived', onAdv);
+  if(watchAbort){ watchAbort.abort(); watchAbort = null; }
+  if(watchDevice){ watchDevice.removeEventListener('advertisementreceived', onAdv); watchDevice = null; }
+  clearInterval(demoTimer); demoTimer = null;
+  stopTest();
+  keepAwake(false);
+  setMode('idle');
+}
+function errorText(e){
+  const m = {
+    NotSupportedError:'この端末・ブラウザでは信号の電波を受信できません。\n下の「使える端末と設定」を確認してください。',
+    NotAllowedError:'受信が許可されませんでした。もう一度押して、許可してください。',
+    NotFoundError:'受信がキャンセルされました。もう一度押してください。',
+    SecurityError:'HTTPSのページで開いてください（GitHub Pagesなら大丈夫です）。',
+    InvalidStateError:'受信を始められませんでした。Bluetoothがオンになっているか確認して、もう一度押してください。',
+  }[e && e.name];
+  return (m || '受信を始められませんでした。') + (e && e.message && e.message !== 'unsupported' ? '\n（' + e.message + '）' : '');
+}
+
+/* =========================================================
+   デモ：本物と同じ解析を通る架空データ
+   ========================================================= */
+let demoTimer = null, demoT = 0;
+const DEMO = [
+  {id:[0,0,0,1], name:'DEMO ekimae', lat:35.889, lon:139.790, step:3, offset:0,
+   lights:[ [['Green',30],['BlinkGreen',6],['Red',42]], [['Red',39],['Green',30],['BlinkGreen',9]],
+            [['Green',30],['BlinkGreen',6],['Red',42]], [['Red',39],['Green',30],['BlinkGreen',9]] ]},
+  {id:[0,0,0,2], name:'DEMO 2chome', lat:35.884, lon:139.786, step:3, offset:17,
+   lights:[ [['Red',24],['Green',21],['BlinkGreen',6]], [['Green',21],['BlinkGreen',6],['Red',24]] ]},
+];
+function demoSignal(cycle, t){
+  const total = cycle.reduce((a,c)=>a+c[1],0);
+  let x = ((t % total) + total) % total;
+  for(const [st, dur] of cycle){
+    if(x < dur) return {st, rem: dur - x};
+    x -= dur;
+  }
+}
+function demoPackets(d, t){
+  const pk = (type, len) => { const a = new Uint8Array(len); a[2]=type; a[3]=t&255; a.set(d.id,6); return a; };
+  const out = [];
+  if(t % 10 === 0){
+    const n = pk(0,24); n.set(new TextEncoder().encode(d.name).subarray(0,14),10); out.push(n);
+    const l = pk(1,18), v = new DataView(l.buffer);
+    v.setInt32(10, Math.round(d.lat*1e6), false); v.setInt32(14, Math.round(d.lon*1e6), false); out.push(l);
+  }
+  const s = pk(2,16);
+  for(let i=0;i<6;i++){
+    const c = d.lights[i];
+    if(!c){ s[10+i] = 0x84; continue; }
+    const {st, rem} = demoSignal(c, t + d.offset);
+    const lv = Math.ceil(rem / d.step);
+    const hi = lv > LEVELS ? 8 : lv - 1;
+    s[10+i] = (hi<<4) | STATES.indexOf(st);
+  }
+  out.push(s);
+  return out;
+}
+function startDemo(){
+  stopAll(); resetData();
+  setMode('demo'); stats.mode = 'デモ（架空のデータ）';
+  say('デモを表示しています。実際の信号ではありません。');
+  demoT = 0;
+  const tick = ()=>{
+    DEMO.forEach((d, k)=>{
+      demoPackets(d, demoT).forEach(pk => onPacket(pk, k===0 ? -62 : -80, now()));
+    });
+    demoT++;
+  };
+  tick(); demoTimer = setInterval(tick, 1000);
+  keepAwake(true);
+}
+
+/* =========================================================
+   画面
+   ========================================================= */
+function say(t, err){ const m=$('msg'); m.textContent = t; m.classList.toggle('err', !!err); }
+function setMode(m){
+  mode = m;
+  const pill = $('pill');
+  pill.dataset.s = m;
+  pill.textContent = {idle:'停止中', wait:'許可待ち', scan:'受信中', demo:'デモ', test:'テスト中'}[m];
+  $('stopBtn').hidden = m === 'idle';
+  $('startBtn').disabled = m === 'wait' || m === 'test' || !!$('startBtn').dataset.locked;
+  $('demoBtn').disabled = m === 'test';
+  $('testBtn').disabled = m === 'test';
+  $('startBtn').textContent = m === 'scan' ? 'さがし直す' : '近くの信号をさがす';
+  document.body.classList.toggle('scanning', m === 'scan' || m === 'wait');
+  if(m === 'idle' && places.size === 0) setEmpty();
+}
+function resetData(){
+  places.clear(); selectedId = null; userPicked = false;
+  Object.assign(stats, {count:0, bad:0, last:null, raw:''});
+  rowCache.clear(); $('signals').innerHTML = ''; chipKey = '';
+}
+function setEmpty(){
+  const scanning = mode === 'scan' || mode === 'wait';
+  $('emptyTitle').textContent = scanning ? '信号をさがしています…' : '信号はまだ見つかっていません';
+  $('emptyText').textContent = scanning ? '対応している交差点の近くで、少し待ってください。' : '対応している交差点の近くで、さがしてください。';
+}
+const placeLabel = (p, k) => p.name || ('交差点 ' + (k+1));
+const colorClass = s => ({Red:'r', Green:'g', BlinkGreen:'b'})[s.state] || '';
+
+let chipKey = '';
+function renderChips(list, t){
+  const key = list.map(p => p.id + (p.name||'') + (t-p.seen > STALE_MS) + p.signals.map(colorClass).join('')).join('|') + selectedId;
+  if(key === chipKey) return;
+  chipKey = key;
+  const c = $('chips');
+  if(list.length < 2){ c.innerHTML = ''; return; }
+  c.innerHTML = list.map((p, k) => {
+    const dots = p.signals.filter(s => s.state !== 'None').map(s => `<i class="${colorClass(s)}"></i>`).join('');
+    return `<button type="button" class="chip${t-p.seen > STALE_MS ? ' stale' : ''}" data-id="${p.id}" aria-pressed="${p.id===selectedId}"><span class="dots">${dots}</span>${escapeHtml(placeLabel(p,k))}</button>`;
+  }).join('');
+}
+$('chips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if(!b) return;
+  selectedId = b.dataset.id; userPicked = true; rowCache.clear(); $('signals').innerHTML = ''; chipKey = '';
+  render();
+});
+const escapeHtml = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const rowCache = new Map();
+function row(i){
+  let r = rowCache.get(i);
+  if(!r){
+    r = $('sigTpl').content.firstElementChild.cloneNode(true);
+    r.querySelector('.sig-name').textContent = '信号' + (i+1);
+    rowCache.set(i, r);
+  }
+  return r;
+}
+function countHTML(e, s){
+  switch(e.kind){
+    case 'sec':      return `<span class="approx">あと約</span><span class="num">${e.sec}</span><span class="unit">秒</span>`;
+    case 'far':      return `<span class="word">まだ先</span>${e.min ? `<span class="approx">（${e.min}秒以上）</span>` : ''}`;
+    case 'measuring':return `<span class="word">計測中…</span>`;
+    default:         return `<span class="word">${s.state==='NoSignal' ? '消灯中' : '—'}</span>`;
+  }
+}
+function noteText(e, frozen){
+  if(frozen) return '受信が止まっています（最後に受信した値）';
+  if(e.kind === 'measuring') return `残り ${e.level} / ${LEVELS} 段階・秒数を計算しています`;
+  if(e.kind === 'sec') return `残り ${e.level} / ${LEVELS} 段階` + (e.exact ? '' : '・おおよそ');
+  if(e.kind === 'far') return `残り ${LEVELS} 段階より長い`;
+  return '';
+}
+
+function render(){
+  const t = now();
+  // 古い交差点を忘れる
+  for(const [id,p] of places) if(t - p.seen > FORGET_MS && id !== selectedId) places.delete(id);
+  const list = [...places.values()].filter(p => p.sigAt).sort((a,b)=>(b.rssi??-999)-(a.rssi??-999));
+  renderChips(list, t);
+
+  const p = places.get(selectedId);
+  const has = p && p.sigAt;
+  $('empty').hidden = !!has; $('placeBody').hidden = !has;
+  if(!has){ setEmpty(); renderDebug(null); return; }
+
+  const k = list.indexOf(p);
+  $('placeName').textContent = placeLabel(p, k < 0 ? 0 : k);
+  const sub = [];
+  if(p.lat != null) sub.push(`<a href="https://www.google.com/maps?q=${p.lat},${p.lon}" target="_blank" rel="noreferrer">地図で見る</a>`);
+  if(p.rssi != null) sub.push(p.rssi > -70 ? '電波：強い' : p.rssi > -85 ? '電波：ふつう' : '電波：弱い');
+  if(mode === 'demo') sub.push('架空のデータ');
+  $('placeSub').innerHTML = sub.join('<span aria-hidden="true">／</span>');
+
+  const frozen = t - p.sigAt > STALE_MS || mode === 'idle';
+  const f = $('fresh');
+  f.className = 'fresh ' + (frozen ? 'stale' : 'live');
+  f.textContent = frozen ? (mode === 'idle' ? '停止中' : '受信が途切れています') : '受信中';
+
+  const box = $('signals');
+  const active = [];
+  p.signals.forEach((s, i) => { if(s.state !== 'None') active.push(i); });
+  [...box.children].forEach(el => { if(!active.some(i => rowCache.get(i) === el)) el.remove(); });
+  active.forEach((i, n) => {
+    const s = p.signals[i], r = row(i), e = estimate(p, i, t);
+    if(box.children[n] !== r) box.insertBefore(r, box.children[n] || null);
+    if(r.dataset.s !== s.state) r.dataset.s = s.state;
+    r.classList.toggle('frozen', frozen);
+    r.querySelector('.sig-state').textContent = STATE_JA[s.state] || '不明';
+    const ch = countHTML(e, s);
+    const c = r.querySelector('.count'); if(c.innerHTML !== ch) c.innerHTML = ch;
+    r.querySelector('.count-note').textContent = noteText(e, frozen);
+    r.querySelectorAll('.bar i').forEach((b, j) => b.classList.toggle('on', s.level < 0 ? true : j < s.level));
+    r.setAttribute('aria-label', `信号${i+1}、${STATE_JA[s.state]}` + (e.kind==='sec' ? `、あと約${e.sec}秒` : ''));
+  });
+  if(!active.length) box.innerHTML = '<p class="empty">この交差点には表示できる歩行者信号がありません。</p>';
+  renderDebug(p);
+}
+function renderDebug(p){
+  $('dMode').textContent = stats.mode || '—';
+  $('dCount').textContent = stats.count;
+  $('dBad').textContent = stats.bad;
+  $('dStep').textContent = p && p.step ? `約${p.step.toFixed(1)}秒（${p.steps.length}回計測）` : '計測中';
+  $('dLast').textContent = stats.last ? new Date(stats.last).toLocaleTimeString('ja-JP') : '—';
+  $('dRaw').textContent = stats.raw || 'まだ受信していません';
+}
+
+/* =========================================================
+   端末テスト（信号がなくても、周りのBLE機器の電波で確認）
+   ========================================================= */
+const TEST_SEC = 12;
+const T = {gen:0, scan:null, abort:null, dev:null, listener:null, timer:null};
+const CHECKS = [
+  ['secure', 'HTTPSで開いている'],
+  ['api',    'ブラウザがBluetoothに対応している'],
+  ['power',  'Bluetoothが使える状態'],
+  ['scanapi','電波を受信する機能（実験的機能）'],
+  ['live',   '実際に電波を受信できる'],
+];
+function drawChecks(){
+  $('checks').innerHTML = CHECKS.map(([k,label]) =>
+    `<li data-k="${k}" data-r="wait"><span class="ic" aria-hidden="true"></span><div><b>${label}</b><span class="d">まだ確認していません</span></div></li>`).join('');
+}
+function mark(k, r, detail, html){
+  const li = $('checks').querySelector(`[data-k="${k}"]`);
+  li.dataset.r = r;
+  li.querySelector('.ic').textContent = {ok:'✓', ng:'×', warn:'!', run:'', wait:'', skip:'–'}[r] || '';
+  const d = li.querySelector('.d');
+  if(html) d.innerHTML = html; else d.textContent = detail;
+}
+function verdict(kind, title, sub){
+  const v = $('verdict'); v.className = 'verdict ' + kind;
+  v.innerHTML = escapeHtml(title) + (sub ? `<small>${escapeHtml(sub)}</small>` : '');
+}
+function stopTest(){
+  T.gen++;
+  clearInterval(T.timer); T.timer = null;
+  try{ T.scan && T.scan.stop(); }catch(e){}
+  T.scan = null;
+  if(T.listener){
+    if(navigator.bluetooth) navigator.bluetooth.removeEventListener('advertisementreceived', T.listener);
+    if(T.dev) T.dev.removeEventListener('advertisementreceived', T.listener);
+  }
+  if(T.abort){ T.abort.abort(); T.abort = null; }
+  T.dev = null; T.listener = null;
+}
+async function runTest(){
+  stopAll(); resetData(); render();
+  setMode('test');
+  const g = T.gen;
+  $('testOut').hidden = false; drawChecks();
+  $('testOut').scrollIntoView({behavior:'smooth', block:'start'});
+  verdict('', '確認しています…', '');
+  const fail = (title, sub) => { verdict('ng', title, sub); setMode('idle'); };
+  const skipRest = from => CHECKS.slice(CHECKS.findIndex(c => c[0] === from)).forEach(([k]) => mark(k, 'skip', '前の項目が使えないため確認していません'));
+
+  // 1. HTTPS
+  if(!window.isSecureContext){
+    mark('secure', 'ng', 'GitHub PagesなどのHTTPSのURLで開いてください。');
+    skipRest('api'); return fail('この開き方では使えません', 'HTTPSのページで開き直してください。');
+  }
+  mark('secure', 'ok', 'OK');
+
+  // 2. Web Bluetooth
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if(!navigator.bluetooth){
+    mark('api', 'ng', ios ? 'iPhone・iPadのブラウザには、この機能がありません。' : 'Androidの「Google Chrome」で開いてください。');
+    skipRest('power');
+    return fail('この端末では使えません', ios ? 'iPhone・iPadでは受信できません。AndroidのChromeで試してください。' : 'AndroidのChromeで開いて、もう一度テストしてください。');
+  }
+  mark('api', 'ok', 'OK');
+
+  // 3. Bluetoothの電源
+  mark('power', 'run', '確認しています…');
+  let avail = null;
+  try{ if(navigator.bluetooth.getAvailability) avail = await navigator.bluetooth.getAvailability(); }catch(e){}
+  if(g !== T.gen) return;
+  if(avail === false){
+    mark('power', 'ng', '端末のBluetoothをオンにしてください。\n（位置情報もオンにしておくと確実です）');
+    skipRest('scanapi'); return fail('Bluetoothがオフになっています', '設定でBluetoothをオンにして、もう一度テストしてください。');
+  }
+  mark('power', avail ? 'ok' : 'warn', avail ? 'OK' : 'ブラウザが電源の状態を教えてくれませんでした。このまま続けます。');
+
+  // 4. 受信機能
+  const hasScan = !!navigator.bluetooth.requestLEScan, hasWatch = canWatch();
+  if(!hasScan && !hasWatch){
+    mark('scanapi', 'ng', '', 'Chromeのアドレス欄で <code>chrome://flags/#enable-experimental-web-platform-features</code> を開き、<b>Enabled</b> にしてChromeを再起動してください。');
+    skipRest('live'); return fail('設定をすると使えるかもしれません', 'Chromeの実験的機能をオンにして、もう一度テストしてください。');
+  }
+  mark('scanapi', hasScan ? 'ok' : 'warn', hasScan ? 'まわりの電波をまとめて受信できます' : 'まとめて受信はできません。選んだ1台の電波だけ受信できます。');
+
+  // 5. 実際に受信
+  const seen = new Map(); let events = 0, pics = 0;
+  T.listener = ev => {
+    events++;
+    const id = (ev.device && ev.device.id) || ev.name || 'unknown';
+    seen.set(id, Math.max(seen.get(id) ?? -999, ev.rssi ?? -999));
+    if(ev.manufacturerData && ev.manufacturerData.has(MFR_ID)){ pics++; onAdv(ev); }
+  };
+  mark('live', 'run', hasScan ? '許可画面が出たら「許可」を押してください。' : '一覧から近くの機器（イヤホンなど）を1つ選んでください。');
+  try{
+    if(hasScan){
+      navigator.bluetooth.addEventListener('advertisementreceived', T.listener);
+      const sc = await navigator.bluetooth.requestLEScan({acceptAllAdvertisements:true, keepRepeatedDevices:true});
+      if(g !== T.gen){ sc.stop(); return; }
+      T.scan = sc;
+    }else{
+      const dev = await navigator.bluetooth.requestDevice({acceptAllDevices:true, optionalManufacturerData:[MFR_ID]});
+      if(g !== T.gen) return;
+      T.dev = dev; T.abort = new AbortController();
+      dev.addEventListener('advertisementreceived', T.listener);
+      await dev.watchAdvertisements({signal:T.abort.signal});
+      if(g !== T.gen){ T.abort.abort(); return; }
+    }
+  }catch(e){
+    if(g !== T.gen) return;
+    stopTest();
+    mark('live', 'ng', errorText(e));
+    return fail('受信を始められませんでした', '許可画面で「許可」を押したか、Bluetoothがオンか確認してください。');
+  }
+  // 受信しながら数える
+  let left = TEST_SEC;
+  const show = () => mark('live', 'run', '', `受信しています… あと${left}秒<div class="meter"><div><em>${seen.size}</em>台の機器</div><div><em>${events}</em>回受信</div><div><em>${pics}</em>回 信号の電波</div></div>`);
+  show();
+  await new Promise(done => {
+    T.timer = setInterval(() => { left--; show(); if(left <= 0){ clearInterval(T.timer); done(); } }, 1000);
+  });
+  if(g !== T.gen) return;
+  const devices = seen.size, near = [...seen.values()].filter(r => r > -70).length;
+  stopTest();
+  const meter = `<div class="meter"><div><em>${devices}</em>台の機器</div><div><em>${events}</em>回受信</div><div><em>${pics}</em>回 信号の電波</div></div>`;
+  if(events > 0){
+    mark('live', 'ok', '', `${TEST_SEC}秒間で受信できました${near ? `（近くの機器 ${near}台）` : ''}${meter}`);
+    if(pics > 0){
+      verdict('ok', 'この端末で使えます。近くに対応している信号があります', '「近くの信号をさがす」を押してください。');
+    }else{
+      verdict('ok', 'この端末で使えます', hasScan ? '対応している交差点の近くで「近くの信号をさがす」を押してください。' : '選んだ1台だけを受信する方式になります。信号の近くで、一覧から信号機を選んでください。');
+    }
+  }else{
+    mark('live', 'warn', '', `${TEST_SEC}秒間、電波を受信できませんでした${meter}`);
+    verdict('warn', '準備はできていますが、電波を受信できませんでした',
+      '周りにBluetooth機器（イヤホン・スマートウォッチなど）がある場所で、もう一度試してください。それでも0回なら、この端末では受信できない可能性があります。');
+  }
+  setMode('idle');
+  if(pics > 0) render();
+}
+
+/* =========================================================
+   起動
+   ========================================================= */
+$('testBtn').addEventListener('click', runTest);
+$('testClose').addEventListener('click', () => { if(mode === 'test') stopAll(); $('testOut').hidden = true; });
+$('startBtn').addEventListener('click', startScan);
+$('demoBtn').addEventListener('click', startDemo);
+$('stopBtn').addEventListener('click', () => {
+  if(mode === 'test'){
+    verdict('warn', 'テストを中止しました', 'もう一度「端末テスト」を押すと、最初から確認します。');
+    $('checks').querySelectorAll('[data-r="run"],[data-r="wait"]').forEach(li => mark(li.dataset.k, 'skip', '中止しました'));
+  }
+  stopAll(); say('停止しました。'); render();
+});
+$('optWake').addEventListener('change', () => keepAwake(mode === 'scan' || mode === 'demo'));
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible'){
+    if(mode === 'scan' || mode === 'demo'){ wakeLock = null; keepAwake(true); }
+  }else if(mode === 'scan'){
+    stopAll(); say('画面を離れたので受信を止めました。もう一度「近くの信号をさがす」を押してください。');
+  }else if(mode === 'test'){
+    stopAll(); verdict('warn', 'テストを中断しました', '画面を離れると受信が止まります。もう一度「端末テスト」を押してください。');
+  }
+});
+(function checkEnv(){
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const env = $('env');
+  if(canScan() || canWatch()) return;
+  env.hidden = false;
+  if(ios){
+    env.innerHTML = '<strong>iPhone・iPadでは受信できません</strong>ブラウザにBluetoothの電波を受信する機能がないためです。AndroidのChromeで開いてください。「デモを見る」で画面は確認できます。';
+  }else{
+    env.innerHTML = '<strong>受信するには設定が必要です</strong><ol><li>AndroidのChromeで開く</li><li><code>chrome://flags/#enable-experimental-web-platform-features</code> を <b>Enabled</b> にする</li><li>Chromeを再起動して、このページを開き直す</li></ol>';
+  }
+  $('startBtn').disabled = true;
+  $('startBtn').dataset.locked = '1';
+})();
+setInterval(render, 250);
+render();
+</script>
+</body>
+</html>
